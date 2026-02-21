@@ -29,6 +29,32 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> src-tauri/target
+          cache-directories: |
+            ~/.cargo/registry
+            ~/.cargo/git
+
+      - name: Ensure Windows icon exists
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "src-tauri/icons" | Out-Null
+
+          if (-not (Test-Path "src-tauri/icons/icon.ico")) {
+            Write-Host "icon.ico missing; writing fallback icon file"
+            $base64 = "AAABAAEAAQEAAAEAIABEAAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAABAAAAAQgGAAAAHxXEiQAAAAtJREFUeJxj+P8fAAMCAO7Z6uUAAAAASUVORK5CYII="
+            [IO.File]::WriteAllBytes("src-tauri/icons/icon.ico", [Convert]::FromBase64String($base64))
+          }
+
+          if (-not (Test-Path "src-tauri/icons/icon.png")) {
+            Write-Error "icons/icon.png missing; expected project icon assets in src-tauri/icons"
+          }
+
+          Get-ChildItem "src-tauri/icons"
+
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
