@@ -12,10 +12,12 @@ type GenerateBlenderCodeResponse = {
   error?: string;
 };
 
+const FALLBACK_REMOTE_BRAIN_URL = 'http://192.168.31.7:8080/generate';
+
 export async function generateBlenderCode(
   input: GenerateBlenderCodeInput
 ): Promise<string> {
-  const endpoint = import.meta.env.VITE_REMOTE_BRAIN_URL;
+  const endpoint = import.meta.env.VITE_REMOTE_BRAIN_URL || FALLBACK_REMOTE_BRAIN_URL;
   const fallbackToken = import.meta.env.VITE_REMOTE_BRAIN_TOKEN;
 
   if (!endpoint) {
