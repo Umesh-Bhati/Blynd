@@ -2466,6 +2466,26 @@ class BLENDERMCP_OT_OpenTerms(bpy.types.Operator):
         return {'FINISHED'}
 
 # Registration functions
+def _blendermcp_autostart_server():
+    try:
+        scene = getattr(bpy.context, "scene", None)
+        if scene is None:
+            return 1.0
+
+        if getattr(scene, "blendermcp_server_running", False):
+            return None
+
+        if hasattr(bpy.types, "blendermcp_server") and bpy.types.blendermcp_server:
+            scene.blendermcp_server_running = True
+            return None
+
+        result = bpy.ops.blendermcp.start_server()
+        print(f"BlenderMCP auto-start server result: {result}")
+        return None
+    except Exception as e:
+        print(f"BlenderMCP auto-start failed (will retry): {str(e)}")
+        return 2.0
+
 def register():
     bpy.types.Scene.blendermcp_port = IntProperty(
         name="Port",
@@ -2595,6 +2615,12 @@ def register():
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
     bpy.utils.register_class(BLENDERMCP_OT_OpenTerms)
+
+    try:
+        bpy.app.timers.register(_blendermcp_autostart_server, first_interval=1.0)
+        print("BlenderMCP auto-start timer registered")
+    except Exception as e:
+        print(f"BlenderMCP auto-start timer registration failed: {str(e)}")
 
     print("BlenderMCP addon registered")
 

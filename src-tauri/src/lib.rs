@@ -10,6 +10,10 @@ use std::env;
 use std::fs;
 #[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::thread;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +50,18 @@ struct BlenderCommandResult {
   result: Option<Value>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlenderAutoSetupResult {
+  ok: bool,
+  executable_path: Option<String>,
+  addon_path: Option<String>,
+  blender_version: Option<String>,
+  socket_status: BlenderSocketStatus,
+  message: String,
+  details: Vec<String>,
+}
+
 #[tauri::command]
 fn healthcheck() -> &'static str {
   "ok"
@@ -59,6 +75,11 @@ fn detect_blender_installation() -> BlenderInstallScan {
 #[tauri::command]
 fn install_blender_addon() -> Result<AddonInstallResult, String> {
   install_blender_addon_impl()
+}
+
+#[tauri::command]
+fn setup_blender_one_click() -> Result<BlenderAutoSetupResult, String> {
+  setup_blender_one_click_impl()
 }
 
 #[tauri::command]
@@ -195,6 +216,48 @@ fn validate_blender_response(response: Value) -> Result<Value, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn check_blender_socket_with_retry(host: &str, port: u16, attempts: usize) -> BlenderSocketStatus {
+  let total_attempts = attempts.max(1);
+
+  for attempt in 0..total_attempts {
+    let ping_request = json!({
+      "type": "get_scene_info",
+      "params": {}
+    });
+
+    match send_blender_command(host, port, &ping_request) {
+      Ok(_) => {
+        return BlenderSocketStatus {
+          connected: true,
+          host: host.to_string(),
+          port,
+          message: "Connected to Blender addon socket.".to_string(),
+        };
+      }
+      Err(err) => {
+        if attempt + 1 == total_attempts {
+          return BlenderSocketStatus {
+            connected: false,
+            host: host.to_string(),
+            port,
+            message: format!("Blender socket unavailable: {err}"),
+          };
+        }
+      }
+    }
+
+    thread::sleep(Duration::from_millis(900));
+  }
+
+  BlenderSocketStatus {
+    connected: false,
+    host: host.to_string(),
+    port,
+    message: "Blender socket check failed unexpectedly.".to_string(),
+  }
+}
+
+#[cfg(target_os = "windows")]
 fn detect_blender_installation_impl() -> BlenderInstallScan {
   let mut roots: Vec<PathBuf> = Vec::new();
   let mut searched_paths: Vec<String> = Vec::new();
@@ -280,6 +343,143 @@ fn install_blender_addon_impl() -> Result<AddonInstallResult, String> {
 #[cfg(not(target_os = "windows"))]
 fn install_blender_addon_impl() -> Result<AddonInstallResult, String> {
   Err("Automatic addon installation is currently implemented for Windows builds only.".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn setup_blender_one_click_impl() -> Result<BlenderAutoSetupResult, String> {
+  let mut details = Vec::new();
+  let scan = detect_blender_installation_impl();
+  details.push(scan.message.clone());
+
+  if !scan.found {
+    return Ok(BlenderAutoSetupResult {
+      ok: false,
+      executable_path: None,
+      addon_path: None,
+      blender_version: None,
+      socket_status: BlenderSocketStatus {
+        connected: false,
+        host: "127.0.0.1".to_string(),
+        port: 9876,
+        message: "Blender socket was not checked because Blender was not detected.".to_string(),
+      },
+      message: "Blender was not found. Install Blender first.".to_string(),
+      details,
+    });
+  }
+
+  let exe_path_str = scan
+    .executable_path
+    .clone()
+    .ok_or_else(|| "Blender scan succeeded but executable path is missing.".to_string())?;
+  let exe_path = PathBuf::from(&exe_path_str);
+
+  let addon_install = install_blender_addon_impl()?;
+  details.push(addon_install.message.clone());
+
+  let enable_output = enable_addon_in_blender_preferences(&exe_path)?;
+  details.push(enable_output);
+
+  let socket_status = check_blender_socket_with_retry("127.0.0.1", 9876, 3);
+  let ok = socket_status.connected;
+  let message = if ok {
+    "Blender one-click setup completed. Addon is installed, enabled, and socket is live.".to_string()
+  } else {
+    "One-click setup completed (addon installed + enabled). Open or restart Blender once; the addon will auto-start the socket server.".to_string()
+  };
+
+  Ok(BlenderAutoSetupResult {
+    ok,
+    executable_path: Some(exe_path_str),
+    addon_path: addon_install.addon_path,
+    blender_version: addon_install.blender_version,
+    socket_status,
+    message,
+    details,
+  })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn setup_blender_one_click_impl() -> Result<BlenderAutoSetupResult, String> {
+  Err("One-click Blender setup is currently implemented for Windows builds only.".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn enable_addon_in_blender_preferences(blender_exe: &Path) -> Result<String, String> {
+  if !blender_exe.is_file() {
+    return Err(format!(
+      "Blender executable not found at {}",
+      blender_exe.display()
+    ));
+  }
+
+  let temp_script_path = env::temp_dir().join("blynd_blender_one_click_setup.py");
+  let setup_script = r#"
+import sys
+import traceback
+import bpy
+
+MODULE_NAME = "blender_mcp"
+
+try:
+    if MODULE_NAME not in bpy.context.preferences.addons:
+        bpy.ops.preferences.addon_enable(module=MODULE_NAME)
+
+    bpy.ops.wm.save_userpref()
+    print("BLYND_SETUP_OK")
+except Exception as exc:
+    traceback.print_exc()
+    print(f"BLYND_SETUP_ERROR: {exc}")
+    sys.exit(1)
+"#;
+
+  fs::write(&temp_script_path, setup_script)
+    .map_err(|err| format!("Failed writing temporary Blender setup script: {err}"))?;
+
+  let output = Command::new(blender_exe)
+    .arg("--background")
+    .arg("--python")
+    .arg(&temp_script_path)
+    .output()
+    .map_err(|err| format!("Failed launching Blender for one-click setup: {err}"))?;
+
+  let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+  let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+  let _ = fs::remove_file(&temp_script_path);
+
+  if !output.status.success() {
+    return Err(format!(
+      "Blender setup script failed (exit code {:?}). stdout: {} stderr: {}",
+      output.status.code(),
+      truncate_log(&stdout, 1000),
+      truncate_log(&stderr, 1000)
+    ));
+  }
+
+  if stdout.contains("BLYND_SETUP_ERROR") {
+    return Err(format!(
+      "Blender reported setup error. stdout: {} stderr: {}",
+      truncate_log(&stdout, 1000),
+      truncate_log(&stderr, 1000)
+    ));
+  }
+
+  Ok(format!(
+    "Blender addon enabled and preferences saved via background Blender process. stdout: {}",
+    truncate_log(&stdout, 400)
+  ))
+}
+
+#[cfg(target_os = "windows")]
+fn truncate_log(input: &str, max_chars: usize) -> String {
+  let normalized = input.replace('\r', " ").replace('\n', " ").trim().to_string();
+  if normalized.chars().count() <= max_chars {
+    return normalized;
+  }
+
+  let truncated: String = normalized.chars().take(max_chars).collect();
+  format!("{truncated}...")
 }
 
 #[cfg(target_os = "windows")]
@@ -396,6 +596,7 @@ pub fn run() {
       healthcheck,
       detect_blender_installation,
       install_blender_addon,
+      setup_blender_one_click,
       check_blender_socket,
       execute_blender_code
     ])

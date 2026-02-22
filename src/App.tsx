@@ -7,6 +7,7 @@ import {
   detectBlenderInstallation,
   executeBlenderCode,
   installBlenderAddon,
+  setupBlenderOneClick,
   type AddonInstallResult,
   type BlenderInstallScan,
   type BlenderSocketStatus
@@ -169,6 +170,7 @@ function Workspace({ session }: { session: Session | null }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isCheckingBlender, setIsCheckingBlender] = useState(false);
   const [isInstallingAddon, setIsInstallingAddon] = useState(false);
+  const [isRunningOneClickSetup, setIsRunningOneClickSetup] = useState(false);
   const [autoApplyToBlender, setAutoApplyToBlender] = useState(true);
   const [blenderScan, setBlenderScan] = useState<BlenderInstallScan | null>(null);
   const [addonInstall, setAddonInstall] = useState<AddonInstallResult | null>(null);
@@ -276,6 +278,59 @@ function Workspace({ session }: { session: Session | null }) {
     }
   };
 
+  const runOneClickBlenderSetup = async () => {
+    setIsRunningOneClickSetup(true);
+
+    try {
+      const result = await setupBlenderOneClick();
+
+      setBlenderScan({
+        found: Boolean(result.executablePath),
+        executablePath: result.executablePath,
+        searchedPaths: [],
+        message: result.executablePath
+          ? 'Blender installation detected.'
+          : 'Blender installation was not detected.'
+      });
+
+      setAddonInstall({
+        installed: Boolean(result.addonPath),
+        addonPath: result.addonPath,
+        blenderVersion: result.blenderVersion,
+        message: result.message
+      });
+
+      setSocketStatus(result.socketStatus);
+
+      if (result.details.length > 0) {
+        setMessages((current) => [
+          ...current,
+          {
+            id: createId(),
+            role: 'assistant',
+            content: `One-click setup: ${result.details.join(' | ')}`
+          }
+        ]);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown one-click setup error.';
+      setAddonInstall({
+        installed: false,
+        addonPath: null,
+        blenderVersion: null,
+        message
+      });
+      setSocketStatus({
+        connected: false,
+        host: '127.0.0.1',
+        port: 9876,
+        message
+      });
+    } finally {
+      setIsRunningOneClickSetup(false);
+    }
+  };
+
   const onSendPrompt = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -375,8 +430,17 @@ function Workspace({ session }: { session: Session | null }) {
             <button
               className="ghost-button"
               type="button"
+              onClick={runOneClickBlenderSetup}
+              disabled={isRunningOneClickSetup}
+            >
+              {isRunningOneClickSetup ? 'Running One-Click Setup...' : 'One-Click Setup'}
+            </button>
+
+            <button
+              className="ghost-button"
+              type="button"
               onClick={runBlenderHandshake}
-              disabled={isCheckingBlender}
+              disabled={isCheckingBlender || isRunningOneClickSetup}
             >
               {isCheckingBlender ? 'Scanning Windows Paths...' : 'Detect Blender Install'}
             </button>
@@ -385,12 +449,17 @@ function Workspace({ session }: { session: Session | null }) {
               className="ghost-button"
               type="button"
               onClick={runAddonInstall}
-              disabled={isInstallingAddon}
+              disabled={isInstallingAddon || isRunningOneClickSetup}
             >
               {isInstallingAddon ? 'Installing Addon...' : 'Install Addon'}
             </button>
 
-            <button className="ghost-button" type="button" onClick={runSocketCheck}>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={runSocketCheck}
+              disabled={isRunningOneClickSetup}
+            >
               Check Blender Socket
             </button>
           </div>

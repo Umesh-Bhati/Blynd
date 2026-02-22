@@ -27,6 +27,16 @@ export type BlenderCommandResult = {
   result: unknown;
 };
 
+export type BlenderAutoSetupResult = {
+  ok: boolean;
+  executablePath: string | null;
+  addonPath: string | null;
+  blenderVersion: string | null;
+  socketStatus: BlenderSocketStatus;
+  message: string;
+  details: string[];
+};
+
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
 }
@@ -55,6 +65,27 @@ export async function installBlenderAddon(): Promise<AddonInstallResult> {
   }
 
   return invoke<AddonInstallResult>('install_blender_addon');
+}
+
+export async function setupBlenderOneClick(): Promise<BlenderAutoSetupResult> {
+  if (!isTauriRuntime()) {
+    return {
+      ok: false,
+      executablePath: null,
+      addonPath: null,
+      blenderVersion: null,
+      socketStatus: {
+        connected: false,
+        host: '127.0.0.1',
+        port: 9876,
+        message: 'Tauri runtime not detected. One-click setup works only in desktop app.'
+      },
+      message: 'Tauri runtime not detected. One-click setup works only in desktop app.',
+      details: []
+    };
+  }
+
+  return invoke<BlenderAutoSetupResult>('setup_blender_one_click');
 }
 
 export async function checkBlenderSocket(
