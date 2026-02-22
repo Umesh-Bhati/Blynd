@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     name: Build Windows Installer
@@ -37,6 +40,33 @@ jobs:
           cache-directories: |
             ~/.cargo/registry
             ~/.cargo/git
+
+      - name: Read app metadata (name/version)
+        id: app_meta
+        shell: pwsh
+        run: |
+          $tauri = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $productName = [string]$tauri.productName
+          $version = [string]$tauri.version
+          $safeName = ($productName -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLower()
+          $releaseTag = "v$version"
+          $releaseName = "$productName v$version (Windows)"
+          $zipName = "$safeName-windows-v$version.zip"
+          $exeName = "$safeName-setup-windows-v$version.exe"
+          $artifactName = "$safeName-windows-bundle-v$version"
+
+          "product_name=$productName" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "safe_name=$safeName" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "release_name=$releaseName" >> $env:GITHUB_OUTPUT
+          "zip_name=$zipName" >> $env:GITHUB_OUTPUT
+          "exe_name=$exeName" >> $env:GITHUB_OUTPUT
+          "artifact_name=$artifactName" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Product: $productName"
+          Write-Host "Version: $version"
+          Write-Host "Release tag: $releaseTag"
 
       - name: Ensure Windows icon exists
         shell: pwsh
@@ -73,8 +103,70 @@ jobs:
       - name: Upload Windows bundle artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: blender-ai-workspace-windows-bundle
+          name: ${{ steps.app_meta.outputs.artifact_name }}
           path: |
             src-tauri/target/release/bundle/**
           if-no-files-found: error
           retention-days: 14
+
+      - name: Prepare direct installer asset (.exe)
+        shell: pwsh
+        run: |
+          $nsisDir = "src-tauri/target/release/bundle/nsis"
+          $outExe = "${{ steps.app_meta.outputs.exe_name }}"
+
+          if (-not (Test-Path $nsisDir)) {
+            Write-Error "NSIS bundle folder not found: $nsisDir"
+          }
+
+          $exe = Get-ChildItem -Path $nsisDir -Filter *.exe -File | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No installer .exe found under $nsisDir"
+          }
+
+          Copy-Item $exe.FullName $outExe -Force
+          Get-Item $outExe | Format-List FullName,Length
+
+      - name: Package bundle for public release download
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri/target/release/bundle"
+          $zipPath = "${{ steps.app_meta.outputs.zip_name }}"
+
+          if (-not (Test-Path $bundleDir)) {
+            Write-Error "Bundle folder not found: $bundleDir"
+          }
+
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+
+          Compress-Archive -Path "$bundleDir\*" -DestinationPath $zipPath -Force
+          Get-Item $zipPath | Format-List FullName,Length
+
+      - name: Publish rolling public prerelease asset
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.app_meta.outputs.release_tag }}
+          name: ${{ steps.app_meta.outputs.release_name }}
+          prerelease: true
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: ${{ steps.app_meta.outputs.zip_name }},${{ steps.app_meta.outputs.exe_name }}
+          body: |
+            Windows test build for ${{ steps.app_meta.outputs.product_name }}.
+
+            Assets included:
+            - Direct installer (.exe)
+            - Full bundle zip (contains the Tauri bundle outputs)
+
+      - name: Add release link to workflow summary
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ github.repository }}/releases/tag/${{ steps.app_meta.outputs.release_tag }}"
+          "## Public Download" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "- Release page: $url" >> $env:GITHUB_STEP_SUMMARY
+          "- Release: ${{ steps.app_meta.outputs.release_name }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Direct installer: ${{ steps.app_meta.outputs.exe_name }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Asset: ${{ steps.app_meta.outputs.zip_name }}" >> $env:GITHUB_STEP_SUMMARY
