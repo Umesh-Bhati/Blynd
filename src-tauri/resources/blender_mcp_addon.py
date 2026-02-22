@@ -2421,7 +2421,8 @@ class BLENDERMCP_OT_StartServer(bpy.types.Operator):
 
         # Create a new server instance
         if not hasattr(bpy.types, "blendermcp_server") or not bpy.types.blendermcp_server:
-            bpy.types.blendermcp_server = BlenderMCPServer(port=scene.blendermcp_port)
+            # Bind to all interfaces so a remote backend on the same LAN can connect.
+            bpy.types.blendermcp_server = BlenderMCPServer(host='0.0.0.0', port=scene.blendermcp_port)
 
         # Start the server
         bpy.types.blendermcp_server.start()

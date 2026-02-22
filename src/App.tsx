@@ -1,6 +1,11 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { generateBlenderCode } from './lib/ai';
+import {
+  generateAndApplyRemote,
+  generateBlenderCode,
+  getRemoteBrainCapabilities,
+  type RemoteBrainCapabilities
+} from './lib/ai';
 import { hasSupabaseEnv, supabase } from './lib/supabase';
 import {
   checkBlenderSocket,
@@ -59,6 +64,19 @@ function loadProjects(): Project[] {
   } catch {
     return fallback;
   }
+}
+
+function providerFromModel(modelValue: string): 'openai' | 'anthropic' | 'groq' | null {
+  if (modelValue.startsWith('openai/')) {
+    return 'openai';
+  }
+  if (modelValue.startsWith('anthropic/')) {
+    return 'anthropic';
+  }
+  if (modelValue.startsWith('groq/')) {
+    return 'groq';
+  }
+  return null;
 }
 
 function App() {
@@ -172,6 +190,8 @@ function Workspace({ session }: { session: Session | null }) {
   const [isInstallingAddon, setIsInstallingAddon] = useState(false);
   const [isRunningOneClickSetup, setIsRunningOneClickSetup] = useState(false);
   const [autoApplyToBlender, setAutoApplyToBlender] = useState(true);
+  const [useRemoteMcpApply, setUseRemoteMcpApply] = useState(true);
+  const [remoteCapabilities, setRemoteCapabilities] = useState<RemoteBrainCapabilities | null>(null);
   const [blenderScan, setBlenderScan] = useState<BlenderInstallScan | null>(null);
   const [addonInstall, setAddonInstall] = useState<AddonInstallResult | null>(null);
   const [socketStatus, setSocketStatus] = useState<BlenderSocketStatus | null>(null);
@@ -194,10 +214,52 @@ function Workspace({ session }: { session: Session | null }) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
   }, [projects]);
 
+  useEffect(() => {
+    let active = true;
+
+    getRemoteBrainCapabilities().then((caps) => {
+      if (active) {
+        setRemoteCapabilities(caps);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId]
   );
+
+  const modelOptions = useMemo(
+    () =>
+      MODELS.map((modelOption) => {
+        const provider = providerFromModel(modelOption.value);
+        const available = provider
+          ? remoteCapabilities?.providers?.[provider]?.configured ?? true
+          : true;
+
+        return {
+          ...modelOption,
+          available
+        };
+      }),
+    [remoteCapabilities]
+  );
+
+  useEffect(() => {
+    const selected = modelOptions.find((item) => item.value === model);
+    if (selected?.available !== false) {
+      return;
+    }
+
+    const firstAvailable = modelOptions.find((item) => item.available);
+    if (firstAvailable) {
+      setModel(firstAvailable.value);
+    }
+  }, [model, modelOptions]);
 
   const addProject = () => {
     const project = {
@@ -343,6 +405,19 @@ function Workspace({ session }: { session: Session | null }) {
       return;
     }
 
+    const selectedModelOption = modelOptions.find((option) => option.value === model);
+    if (selectedModelOption && !selectedModelOption.available) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: createId(),
+          role: 'assistant',
+          content: `Error: ${selectedModelOption.label} is not available because its provider key is not configured on the backend.`
+        }
+      ]);
+      return;
+    }
+
     setPrompt('');
     setMessages((current) => [
       ...current,
@@ -351,6 +426,39 @@ function Workspace({ session }: { session: Session | null }) {
     setIsGenerating(true);
 
     try {
+      if (useRemoteMcpApply) {
+        const remoteApply = await generateAndApplyRemote({
+          prompt: cleanedPrompt,
+          model,
+          projectId: selectedProject?.id
+        });
+
+        setMessages((current) => [
+          ...current,
+          {
+            id: createId(),
+            role: 'assistant',
+            content: `Remote MCP apply (${remoteApply.provider} / ${remoteApply.model}) to ${remoteApply.blenderHost}:${remoteApply.blenderPort}: ${remoteApply.message}`
+          }
+        ]);
+
+        const remoteCode = remoteApply.pythonCode;
+        if (typeof remoteCode === 'string' && remoteCode.trim()) {
+          setMessages((current) => [
+            ...current,
+            {
+              id: createId(),
+              role: 'assistant',
+              content: remoteCode
+            }
+          ]);
+        }
+
+        // Local socket status check is still useful because Blender and desktop app are on same Windows laptop.
+        await runSocketCheck();
+        return;
+      }
+
       const generatedCode = await generateBlenderCode({
         prompt: cleanedPrompt,
         model,
@@ -536,9 +644,13 @@ function Workspace({ session }: { session: Session | null }) {
           <label className="model-picker">
             Model
             <select value={model} onChange={(e) => setModel(e.target.value)}>
-              {MODELS.map((modelOption) => (
-                <option key={modelOption.value} value={modelOption.value}>
-                  {modelOption.label}
+              {modelOptions.map((modelOption) => (
+                <option
+                  key={modelOption.value}
+                  value={modelOption.value}
+                  disabled={!modelOption.available}
+                >
+                  {modelOption.available ? modelOption.label : `${modelOption.label} (Unavailable)`}
                 </option>
               ))}
             </select>
@@ -558,13 +670,28 @@ function Workspace({ session }: { session: Session | null }) {
           <p className="muted">
             Remote brain endpoint: {HAS_REMOTE_BRAIN_ENV ? 'configured' : 'not configured'}.
           </p>
+          {remoteCapabilities ? (
+            <p className="muted">
+              Providers: Groq {remoteCapabilities.providers.groq.configured ? 'on' : 'off'} | OpenAI{' '}
+              {remoteCapabilities.providers.openai.configured ? 'on' : 'off'} | Anthropic{' '}
+              {remoteCapabilities.providers.anthropic.configured ? 'on' : 'off'}
+            </p>
+          ) : null}
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={useRemoteMcpApply}
+              onChange={(event) => setUseRemoteMcpApply(event.target.checked)}
+            />
+            Remote MCP apply via backend (Mac executes on this Windows Blender over LAN)
+          </label>
           <label className="toggle-row">
             <input
               type="checkbox"
               checked={autoApplyToBlender}
               onChange={(event) => setAutoApplyToBlender(event.target.checked)}
             />
-            Auto-apply generated code to Blender on port 9876
+            Auto-apply generated code locally (fallback mode)
           </label>
           <textarea
             value={prompt}
