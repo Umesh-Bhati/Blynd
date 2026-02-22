@@ -1,9 +1,16 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import {
+  clearRemoteBrainUrlOverride,
+  clearRemoteBrainTokenOverride,
   generateAndApplyRemote,
   generateBlenderCode,
+  getActiveRemoteBrainGenerateUrl,
+  getActiveRemoteBrainToken,
   getRemoteBrainCapabilities,
+  hasActiveRemoteBrainToken,
+  setRemoteBrainUrlOverride,
+  setRemoteBrainTokenOverride,
   type RemoteBrainCapabilities
 } from './lib/ai';
 import { hasSupabaseEnv, supabase } from './lib/supabase';
@@ -192,6 +199,9 @@ function Workspace({ session }: { session: Session | null }) {
   const [autoApplyToBlender, setAutoApplyToBlender] = useState(true);
   const [useRemoteMcpApply, setUseRemoteMcpApply] = useState(true);
   const [remoteCapabilities, setRemoteCapabilities] = useState<RemoteBrainCapabilities | null>(null);
+  const [remoteBrainUrlDraft, setRemoteBrainUrlDraft] = useState(() => getActiveRemoteBrainGenerateUrl());
+  const [remoteBrainTokenDraft, setRemoteBrainTokenDraft] = useState(() => getActiveRemoteBrainToken());
+  const [hasRemoteBrainToken, setHasRemoteBrainToken] = useState(() => hasActiveRemoteBrainToken());
   const [blenderScan, setBlenderScan] = useState<BlenderInstallScan | null>(null);
   const [addonInstall, setAddonInstall] = useState<AddonInstallResult | null>(null);
   const [socketStatus, setSocketStatus] = useState<BlenderSocketStatus | null>(null);
@@ -214,12 +224,20 @@ function Workspace({ session }: { session: Session | null }) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
   }, [projects]);
 
+  const refreshRemoteCapabilities = async () => {
+    const caps = await getRemoteBrainCapabilities();
+    setRemoteCapabilities(caps);
+  };
+
   useEffect(() => {
     let active = true;
 
     getRemoteBrainCapabilities().then((caps) => {
       if (active) {
         setRemoteCapabilities(caps);
+        setRemoteBrainUrlDraft(getActiveRemoteBrainGenerateUrl());
+        setRemoteBrainTokenDraft(getActiveRemoteBrainToken());
+        setHasRemoteBrainToken(hasActiveRemoteBrainToken());
       }
     });
 
@@ -338,6 +356,79 @@ function Workspace({ session }: { session: Session | null }) {
         message
       });
     }
+  };
+
+  const saveRemoteBrainUrl = async () => {
+    try {
+      const normalized = setRemoteBrainUrlOverride(remoteBrainUrlDraft);
+      setRemoteBrainUrlDraft(normalized);
+      await refreshRemoteCapabilities();
+      setMessages((current) => [
+        ...current,
+        {
+          id: createId(),
+          role: 'assistant',
+          content: `Remote brain URL updated to ${normalized}`
+        }
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid remote brain URL.';
+      setMessages((current) => [
+        ...current,
+        {
+          id: createId(),
+          role: 'assistant',
+          content: `Error: ${message}`
+        }
+      ]);
+    }
+  };
+
+  const resetRemoteBrainUrl = async () => {
+    clearRemoteBrainUrlOverride();
+    const nextUrl = getActiveRemoteBrainGenerateUrl();
+    setRemoteBrainUrlDraft(nextUrl);
+    await refreshRemoteCapabilities();
+    setMessages((current) => [
+      ...current,
+      {
+        id: createId(),
+        role: 'assistant',
+        content: `Remote brain URL reset to ${nextUrl}`
+      }
+    ]);
+  };
+
+  const saveRemoteBrainToken = async () => {
+    setRemoteBrainTokenOverride(remoteBrainTokenDraft);
+    setRemoteBrainTokenDraft(getActiveRemoteBrainToken());
+    setHasRemoteBrainToken(hasActiveRemoteBrainToken());
+    await refreshRemoteCapabilities();
+    setMessages((current) => [
+      ...current,
+      {
+        id: createId(),
+        role: 'assistant',
+        content: hasActiveRemoteBrainToken()
+          ? 'Remote brain token saved (runtime override).'
+          : 'Remote brain token cleared.'
+      }
+    ]);
+  };
+
+  const resetRemoteBrainToken = async () => {
+    clearRemoteBrainTokenOverride();
+    setRemoteBrainTokenDraft(getActiveRemoteBrainToken());
+    setHasRemoteBrainToken(hasActiveRemoteBrainToken());
+    await refreshRemoteCapabilities();
+    setMessages((current) => [
+      ...current,
+      {
+        id: createId(),
+        role: 'assistant',
+        content: 'Remote brain token reset to build/default value.'
+      }
+    ]);
   };
 
   const runOneClickBlenderSetup = async () => {
@@ -670,6 +761,43 @@ function Workspace({ session }: { session: Session | null }) {
           <p className="muted">
             Remote brain endpoint: {HAS_REMOTE_BRAIN_ENV ? 'configured' : 'not configured'}.
           </p>
+          <p className="muted">Active endpoint: {getActiveRemoteBrainGenerateUrl()}</p>
+          <p className="muted">Remote brain token: {hasRemoteBrainToken ? 'set' : 'not set'}</p>
+          <label className="model-picker">
+            Remote Brain URL
+            <input
+              type="text"
+              value={remoteBrainUrlDraft}
+              onChange={(e) => setRemoteBrainUrlDraft(e.target.value)}
+              placeholder="http://<mac-ip>:8080/generate"
+            />
+          </label>
+          <div className="project-rename-row">
+            <button type="button" onClick={saveRemoteBrainUrl}>
+              Save URL
+            </button>
+            <button type="button" className="ghost-button" onClick={resetRemoteBrainUrl}>
+              Reset URL
+            </button>
+          </div>
+          <label className="model-picker">
+            Remote Brain Token (Optional)
+            <input
+              type="password"
+              value={remoteBrainTokenDraft}
+              onChange={(e) => setRemoteBrainTokenDraft(e.target.value)}
+              placeholder="Bearer token value"
+              autoComplete="off"
+            />
+          </label>
+          <div className="project-rename-row">
+            <button type="button" onClick={saveRemoteBrainToken}>
+              Save Token
+            </button>
+            <button type="button" className="ghost-button" onClick={resetRemoteBrainToken}>
+              Reset Token
+            </button>
+          </div>
           {remoteCapabilities ? (
             <p className="muted">
               Providers: Groq {remoteCapabilities.providers.groq.configured ? 'on' : 'off'} | OpenAI{' '}

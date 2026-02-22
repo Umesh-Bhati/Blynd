@@ -3,3 +3,8 @@ dist/
 .env
 .DS_Store
 src-tauri/target/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/

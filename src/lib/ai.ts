@@ -69,9 +69,111 @@ type RemoteBrainCapabilitiesResponse = {
 };
 
 const FALLBACK_REMOTE_BRAIN_URL = 'http://192.168.31.7:8080/generate';
+const REMOTE_BRAIN_URL_OVERRIDE_KEY = 'blender-ai-workspace.remote-brain-url';
+const REMOTE_BRAIN_TOKEN_OVERRIDE_KEY = 'blender-ai-workspace.remote-brain-token';
+
+function readRemoteBrainUrlOverride(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(REMOTE_BRAIN_URL_OVERRIDE_KEY)?.trim() ?? '';
+  return raw || null;
+}
+
+function normalizeRemoteBrainGenerateEndpoint(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  if (trimmed.endsWith('/generate')) {
+    return trimmed;
+  }
+
+  if (trimmed.endsWith('/')) {
+    return `${trimmed}generate`;
+  }
+
+  // Allow entering the backend base URL only (e.g. http://IP:8080)
+  if (!/\/(generate|generate-and-apply|health|capabilities)$/.test(trimmed)) {
+    return `${trimmed}/generate`;
+  }
+
+  if (trimmed.endsWith('/health')) {
+    return trimmed.replace(/\/health$/, '/generate');
+  }
+
+  if (trimmed.endsWith('/capabilities')) {
+    return trimmed.replace(/\/capabilities$/, '/generate');
+  }
+
+  if (trimmed.endsWith('/generate-and-apply')) {
+    return trimmed.replace(/\/generate-and-apply$/, '/generate');
+  }
+
+  return trimmed;
+}
+
+export function getActiveRemoteBrainGenerateUrl(): string {
+  return getRemoteBrainGenerateEndpoint();
+}
+
+function readRemoteBrainTokenOverride(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(REMOTE_BRAIN_TOKEN_OVERRIDE_KEY)?.trim() ?? '';
+  return raw || null;
+}
+
+function getRemoteBrainToken(): string | null {
+  return readRemoteBrainTokenOverride() || import.meta.env.VITE_REMOTE_BRAIN_TOKEN || null;
+}
+
+export function getActiveRemoteBrainToken(): string {
+  return getRemoteBrainToken() ?? '';
+}
+
+export function hasActiveRemoteBrainToken(): boolean {
+  return Boolean(getRemoteBrainToken());
+}
+
+export function setRemoteBrainTokenOverride(input: string): void {
+  const trimmed = input.trim();
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(REMOTE_BRAIN_TOKEN_OVERRIDE_KEY, trimmed);
+  }
+}
+
+export function clearRemoteBrainTokenOverride(): void {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(REMOTE_BRAIN_TOKEN_OVERRIDE_KEY);
+  }
+}
+
+export function setRemoteBrainUrlOverride(input: string): string {
+  const normalized = normalizeRemoteBrainGenerateEndpoint(input);
+  if (!normalized) {
+    throw new Error('Remote brain URL cannot be empty.');
+  }
+
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(REMOTE_BRAIN_URL_OVERRIDE_KEY, normalized);
+  }
+
+  return normalized;
+}
+
+export function clearRemoteBrainUrlOverride(): void {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(REMOTE_BRAIN_URL_OVERRIDE_KEY);
+  }
+}
 
 function getRemoteBrainGenerateEndpoint(): string {
-  return import.meta.env.VITE_REMOTE_BRAIN_URL || FALLBACK_REMOTE_BRAIN_URL;
+  return readRemoteBrainUrlOverride() || import.meta.env.VITE_REMOTE_BRAIN_URL || FALLBACK_REMOTE_BRAIN_URL;
 }
 
 function getRemoteBrainBaseUrl(): string {
@@ -90,7 +192,7 @@ function getRemoteBrainBaseUrl(): string {
 
 export async function getRemoteBrainCapabilities(): Promise<RemoteBrainCapabilities | null> {
   const baseUrl = getRemoteBrainBaseUrl();
-  const fallbackToken = import.meta.env.VITE_REMOTE_BRAIN_TOKEN;
+  const fallbackToken = getRemoteBrainToken();
 
   const headers: Record<string, string> = {};
   if (fallbackToken) {
@@ -129,7 +231,7 @@ export async function generateBlenderCode(
   input: GenerateBlenderCodeInput
 ): Promise<string> {
   const endpoint = getRemoteBrainGenerateEndpoint();
-  const fallbackToken = import.meta.env.VITE_REMOTE_BRAIN_TOKEN;
+  const fallbackToken = getRemoteBrainToken();
 
   if (!endpoint) {
     throw new Error('Remote brain endpoint missing. Set VITE_REMOTE_BRAIN_URL in your environment.');
@@ -174,7 +276,7 @@ export async function generateAndApplyRemote(
 ): Promise<GenerateAndApplyRemoteResult> {
   const baseUrl = getRemoteBrainBaseUrl();
   const endpoint = `${baseUrl}/generate-and-apply`;
-  const fallbackToken = import.meta.env.VITE_REMOTE_BRAIN_TOKEN;
+  const fallbackToken = getRemoteBrainToken();
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
